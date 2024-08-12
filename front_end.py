@@ -1,115 +1,127 @@
-import streamlit as st
+import cv2
+import time
+import numpy as np
 from PIL import Image
+import streamlit as st
+from ultralytics import YOLO
 
-# Define the navbar with buttons included in the HTML
-st.markdown(
-    """
-    <style>
-    .navbar {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        background-color: #4CAF50;
-        padding: 10px 20px;
-        margin-bottom: 20px;
-        border-radius: 8px;
-    }
-    .navbar h1 {
-        margin: 0;
-        color: white;
-        font-size: 24px;
-        font-weight: bold;
-    }
-    .button-container {
-        display: flex;
-        gap: 15px;
-    }
-    .navbar-button {
-        padding: 10px 20px;
-        background-color: white;
-        border: 2px solid #4CAF50;
-        color: #4CAF50;
-        cursor: pointer;
-        font-size: 16px;
-        font-weight: bold;
-        border-radius: 25px;
-        transition: all 0.3s ease;
-    }
-    .navbar-button:hover {
-        background-color: #4CAF50;
-        color: white;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-    }
-    </style>
-    <div class="navbar">
-        <h1>Image Upload and Display</h1>
-        <div class="button-container">
-            <button id = "login-button" class = "navbar-button">Login</button>
-            <button id = "signup-button" class = "navbar-button">Sign Up</button>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+# Function to navigate to the detect page
+def go_to_detect():
+    st.session_state.page = "detect"
 
-# JavaScript for button interactions (this triggers Streamlit events)
-st.markdown(
-    """
-    <script>
-    const loginButton = document.getElementById('login-button');
-    const signupButton = document.getElementById('signup-button');
+# Function to navigate to the upload page
+def go_to_upload():
+    st.session_state.page = "upload"
 
-    loginButton.onclick = function() {
-        window.parent.postMessage({ type: 'login_click' }, '*');
-    };
+def load_model():
+    model = YOLO("D:/project/Car Damage Detection/best2.pt")
+    return model
 
-    signupButton.onclick = function() {
-        window.parent.postMessage({ type: 'signup_click' }, '*');
-    };
-    </script>
-    """,
-    unsafe_allow_html=True,
-)
+# Function to process the image and make predictions
+def detect_damage_and_draw_boxes(image, model):
+    # Perform inference
+    results = model(image)
 
-# Placeholder to listen to the custom events triggered by the JavaScript
-login_click = st.empty()
-signup_click = st.empty()
+    # Convert PIL image to a NumPy array (OpenCV format)
+    image_cv = np.array(image)
 
-# Check for clicks and update Streamlit app accordingly
-if st.session_state.get('login_clicked', False):
-    st.write("Login button clicked! Redirecting to login...")
+    # Access class names directly from the model
+    labels = model.names  # Access class names
 
-if st.session_state.get('signup_clicked', False):
-    st.write("Sign Up button clicked! Redirecting to sign-up...")
+    # Draw bounding boxes on the image
+    for detection in results[0].boxes:
+        # Extract bounding box coordinates and other attributes
+        box = detection.xyxy[0].tolist()  # Ensure correct unpacking of xyxy
+        conf = detection.conf[0].tolist() if detection.conf is not None else 0
+        cls = int(detection.cls[0].tolist()) if detection.cls is not None else 0
 
-# Create a file uploader widget
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+        if len(box) == 4:  # If the result contains bounding box coordinates
+            x1, y1, x2, y2 = map(int, box)
+            label = labels[cls] if labels else str(cls)
+            color = (0, 255, 0)  # Green color for bounding boxes
+            # Draw bounding box
+            cv2.rectangle(image_cv, (x1, y1), (x2, y2), color, 2)
+            # Draw label and confidence
+            cv2.putText(image_cv, f'{label} {conf:.2f}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-# If a file is uploaded
-if uploaded_file is not None:
-    # Open the uploaded image
-    image = Image.open(uploaded_file)
+    # Convert NumPy array back to PIL Image for displaying in Streamlit
+    image_annotated = Image.fromarray(image_cv)
 
-    # Display the image on the page
-    st.image(image, caption='Uploaded Image.', use_column_width=True)
+    # Prepare results DataFrame for display
+    detections_df = []
+    for detection in results[0].boxes:
+        box = detection.xyxy[0].tolist()
+        conf = detection.conf[0].tolist() if detection.conf is not None else 0
+        cls = int(detection.cls[0].tolist()) if detection.cls is not None else 0
 
-    # Optionally, you can add more processing or display information
-    st.write("Image has been successfully uploaded and displayed.")
+        if len(box) == 4:  # Ensure the box contains 4 coordinates
+            x1, y1, x2, y2 = map(int, box)
+            detections_df.append({
+                'x1': x1,
+                'y1': y1,
+                'x2': x2,
+                'y2': y2,
+                'confidence': conf,
+                'class': labels[cls] if labels else str(cls)
+            })
 
+    return image_annotated, detections_df
 
-# Listen to the messages from JavaScript and update Streamlit session state
-st.markdown(
-"""
-    <script>
-    window.addEventListener('message', (event) => {
-        if (event.data.type === 'login_click') {
-            window.parent.postMessage({ type: 'streamlit', key: 'login_clicked', value: true }, '*');
-        } else if (event.data.type === 'signup_click') {
-            window.parent.postMessage({ type: 'streamlit', key: 'signup_clicked', value: true }, '*');
-        }
-    });
-    </script>
-""",
-unsafe_allow_html=True,
-)
+# Initialize session state if not already done
+if "page" not in st.session_state:
+    st.session_state.page = "upload"
 
+# Load the model
+model = load_model()
+
+if "uploaded_file" not in st.session_state:
+    st.session_state.uploaded_file = None
+
+# Check the current page
+if st.session_state.page == "upload":
+
+    with st.container():
+        col1, col2 = st.columns([4, 1])
+
+        with col1:
+            st.markdown("<h1 style='color: white; margin: 0;'>Image Upload and Display</h1>", unsafe_allow_html=True)
+
+        with col2:
+            if st.button("Detect Damage"):
+                if st.session_state.uploaded_file is not None:
+                    go_to_detect()
+                else:
+                    warning_placeholder = st.empty()
+                    warning_placeholder.write("Please upload an image file first!!")
+                    time.sleep(3)
+                    warning_placeholder.empty()
+
+    st.session_state.uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+
+    if st.session_state.uploaded_file is not None:
+        image = Image.open(st.session_state.uploaded_file).convert("RGB")
+        st.session_state.image = image
+
+        st.write("Image has been successfully uploaded and displayed.")
+        st.image(image, caption="Uploaded Image.", use_column_width=True)
+
+elif st.session_state.page == "detect":
+    with st.container():
+        col1, col2 = st.columns([4, 1])
+
+        with col1:
+            st.markdown("<h1>Damage Detection Page</h1>", unsafe_allow_html=True)
+
+        with col2:
+            if st.button("Go Back to the Upload"):
+                go_to_upload()
+
+    if st.session_state.uploaded_file is not None:
+        image_annotated, detections_df = detect_damage_and_draw_boxes(st.session_state.image, model)
+
+        st.image(image_annotated, caption="Detected Image with Bounding Boxes", use_column_width=True)
+        st.write("Predictions:")
+        st.write(detections_df)
+        #st.image(st.session_state.image, caption="Uploaded Image.", use_column_width=True)
+    else:
+        st.write("No image uploaded yet!")
